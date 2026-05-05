@@ -49,6 +49,12 @@ def ensure_runtime_ready() -> None:
         raise gr.Error("Real-ESRGAN is not installed in this session. Run the Colab setup cells again.")
 
 
+def ensure_realesrgan_import_path() -> None:
+    repo_path = str(REAL_ESRGAN_DIR)
+    if repo_path not in sys.path:
+        sys.path.insert(0, repo_path)
+
+
 def run_command(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         command,
@@ -107,6 +113,7 @@ def calculate_outscale(width: int, height: int, target_mode: str) -> float:
 
 def create_upsampler(model_name: str, tile_size: int):
     ensure_torchvision_compat()
+    ensure_realesrgan_import_path()
     from basicsr.archs.rrdbnet_arch import RRDBNet
     from basicsr.utils.download_util import load_file_from_url
     from realesrgan import RealESRGANer
