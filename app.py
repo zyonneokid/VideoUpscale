@@ -1,7 +1,5 @@
 import json
-import math
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -109,6 +107,19 @@ def calculate_outscale(width: int, height: int, target_mode: str) -> float:
         return 4.0
     scale = min(3840 / width, 2160 / height)
     return round(max(1.0, min(scale, 4.0)), 3)
+
+
+def calculate_target_resolution(width: int, height: int, target_mode: str) -> tuple[int, int]:
+    if target_mode == "4x":
+        return width * 4, height * 4
+    scale = min(3840 / width, 2160 / height)
+    scaled_width = max(2, int(width * scale))
+    scaled_height = max(2, int(height * scale))
+    if scaled_width % 2:
+        scaled_width -= 1
+    if scaled_height % 2:
+        scaled_height -= 1
+    return scaled_width, scaled_height
 
 
 def create_upsampler(model_name: str, tile_size: int):
@@ -286,6 +297,50 @@ def encode_video(
     return process.stderr.strip()
 
 
+def upscale_video_natural(
+    input_path: Path,
+    final_path: Path,
+    metadata: dict,
+    target_mode: str,
+) -> str:
+    target_width, target_height = calculate_target_resolution(
+        metadata["width"], metadata["height"], target_mode
+    )
+    filters = [
+        f"scale={target_width}:{target_height}:flags=lanczos",
+        "hqdn3d=1.2:1.2:6:6",
+        "unsharp=3:3:0.2:3:3:0.0",
+    ]
+    if target_mode == "4k":
+        filters.append("pad=3840:2160:(ow-iw)/2:(oh-ih)/2:color=black")
+
+    command = [
+        FFMPEG_BIN,
+        "-y",
+        "-i",
+        str(input_path),
+        "-vf",
+        ",".join(filters),
+        "-c:v",
+        "libx264",
+        "-preset",
+        "slow",
+        "-crf",
+        "16",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        str(final_path),
+    ]
+    process = run_command(command)
+    if process.returncode != 0:
+        raise gr.Error(f"Natural upscale failed.\n\n{process.stderr.strip()[-3000:]}")
+    return process.stderr.strip()
+
+
 def upscale_video(
     input_video: str | None,
     preset: str,
@@ -298,43 +353,47 @@ def upscale_video(
     ensure_runtime_ready()
     input_path = Path(input_video).resolve()
     metadata = probe_video(input_path)
-    outscale = calculate_outscale(metadata["width"], metadata["height"], target_mode)
-    model_name = choose_model(preset)
-    tile_size = 128 if max(metadata["width"], metadata["height"]) >= 1280 else 0
-
     workspace_dir = Path(tempfile.mkdtemp(prefix="realesrgan-work-"))
-    frames_dir = workspace_dir / "frames"
-    output_frames_dir = workspace_dir / "upscaled_frames"
     final_path = workspace_dir / f"{input_path.stem}_{target_mode}.mp4"
 
-    progress(0.05, desc="Extracting video frames")
-    logs = [extract_frames(input_path, frames_dir)]
+    if preset == "natural":
+        progress(0.1, desc="Running natural upscale")
+        logs = [upscale_video_natural(input_path, final_path, metadata, target_mode)]
+    else:
+        outscale = calculate_outscale(metadata["width"], metadata["height"], target_mode)
+        model_name = choose_model(preset)
+        tile_size = 128 if max(metadata["width"], metadata["height"]) >= 1280 else 0
+        frames_dir = workspace_dir / "frames"
+        output_frames_dir = workspace_dir / "upscaled_frames"
 
-    progress(0.2, desc="Loading Real-ESRGAN model")
-    upsampler = create_upsampler(model_name, tile_size)
+        progress(0.05, desc="Extracting video frames")
+        logs = [extract_frames(input_path, frames_dir)]
 
-    frame_logs = upscale_frames(
-        frames_dir=frames_dir,
-        output_frames_dir=output_frames_dir,
-        upsampler=upsampler,
-        outscale=outscale,
-        progress=progress,
-        progress_start=0.25,
-        progress_end=0.9,
-    )
-    if frame_logs:
-        logs.append(frame_logs)
+        progress(0.2, desc="Loading Real-ESRGAN model")
+        upsampler = create_upsampler(model_name, tile_size)
 
-    progress(0.92, desc="Encoding final video")
-    logs.append(
-        encode_video(
+        frame_logs = upscale_frames(
+            frames_dir=frames_dir,
             output_frames_dir=output_frames_dir,
-            input_path=input_path,
-            final_path=final_path,
-            fps=metadata["fps"],
-            target_mode=target_mode,
+            upsampler=upsampler,
+            outscale=outscale,
+            progress=progress,
+            progress_start=0.25,
+            progress_end=0.9,
         )
-    )
+        if frame_logs:
+            logs.append(frame_logs)
+
+        progress(0.92, desc="Encoding final video")
+        logs.append(
+            encode_video(
+                output_frames_dir=output_frames_dir,
+                input_path=input_path,
+                final_path=final_path,
+                fps=metadata["fps"],
+                target_mode=target_mode,
+            )
+        )
 
     progress(1.0, desc="Finished")
     return str(final_path), str(final_path), "\n\n".join(part for part in logs if part).strip()
@@ -357,11 +416,12 @@ def build_app() -> gr.Blocks:
         with gr.Row():
             preset = gr.Dropdown(
                 choices=[
+                    ("Natural video (recommended)", "natural"),
                     ("General video", "general"),
                     ("Anime video", "anime"),
                     ("Sharp detail boost", "detail"),
                 ],
-                value="general",
+                value="natural",
                 label="Upscaling Preset",
             )
             target_mode = gr.Radio(
