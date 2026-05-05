@@ -3,7 +3,9 @@ import math
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
+import types
 from pathlib import Path
 
 import gradio as gr
@@ -104,6 +106,7 @@ def calculate_outscale(width: int, height: int, target_mode: str) -> float:
 
 
 def create_upsampler(model_name: str, tile_size: int):
+    ensure_torchvision_compat()
     from basicsr.archs.rrdbnet_arch import RRDBNet
     from basicsr.utils.download_util import load_file_from_url
     from realesrgan import RealESRGANer
@@ -153,6 +156,21 @@ def create_upsampler(model_name: str, tile_size: int):
         pre_pad=0,
         half=True,
     )
+
+
+def ensure_torchvision_compat() -> None:
+    module_name = "torchvision.transforms.functional_tensor"
+    if module_name in sys.modules:
+        return
+
+    try:
+        from torchvision.transforms.functional import rgb_to_grayscale
+    except Exception as error:
+        raise gr.Error(f"torchvision compatibility setup failed.\n\n{error}") from error
+
+    shim = types.ModuleType(module_name)
+    shim.rgb_to_grayscale = rgb_to_grayscale
+    sys.modules[module_name] = shim
 
 
 def extract_frames(input_path: Path, frames_dir: Path) -> str:
