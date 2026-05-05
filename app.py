@@ -102,17 +102,22 @@ def choose_model(preset: str) -> str:
     return "RealESRGAN_x4plus"
 
 
+TARGET_RESOLUTIONS = {
+    "1k": (1920, 1080),
+    "2k": (2560, 1440),
+    "4k": (3840, 2160),
+}
+
+
 def calculate_outscale(width: int, height: int, target_mode: str) -> float:
-    if target_mode == "4x":
-        return 4.0
-    scale = min(3840 / width, 2160 / height)
+    target_width, target_height = TARGET_RESOLUTIONS[target_mode]
+    scale = min(target_width / width, target_height / height)
     return round(max(1.0, min(scale, 4.0)), 3)
 
 
 def calculate_target_resolution(width: int, height: int, target_mode: str) -> tuple[int, int]:
-    if target_mode == "4x":
-        return width * 4, height * 4
-    scale = min(3840 / width, 2160 / height)
+    target_width, target_height = TARGET_RESOLUTIONS[target_mode]
+    scale = min(target_width / width, target_height / height)
     scaled_width = max(2, int(width * scale))
     scaled_height = max(2, int(height * scale))
     if scaled_width % 2:
@@ -258,10 +263,8 @@ def encode_video(
     fps: float,
     target_mode: str,
 ) -> str:
-    if target_mode == "4k":
-        video_filter = "pad=3840:2160:(ow-iw)/2:(oh-ih)/2:color=black"
-    else:
-        video_filter = "null"
+    target_width, target_height = TARGET_RESOLUTIONS[target_mode]
+    video_filter = f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2:color=black"
 
     command = [
         FFMPEG_BIN,
@@ -308,11 +311,13 @@ def upscale_video_natural(
     )
     filters = [
         f"scale={target_width}:{target_height}:flags=lanczos",
-        "hqdn3d=1.2:1.2:6:6",
-        "unsharp=3:3:0.2:3:3:0.0",
+        "hqdn3d=0.6:0.6:3:3",
+        "unsharp=3:3:0.12:3:3:0.0",
     ]
-    if target_mode == "4k":
-        filters.append("pad=3840:2160:(ow-iw)/2:(oh-ih)/2:color=black")
+    target_canvas_width, target_canvas_height = TARGET_RESOLUTIONS[target_mode]
+    filters.append(
+        f"pad={target_canvas_width}:{target_canvas_height}:(ow-iw)/2:(oh-ih)/2:color=black"
+    )
 
     command = [
         FFMPEG_BIN,
@@ -324,15 +329,15 @@ def upscale_video_natural(
         "-c:v",
         "libx264",
         "-preset",
-        "slow",
+        "veryfast",
         "-crf",
-        "16",
+        "19",
         "-pix_fmt",
         "yuv420p",
         "-c:a",
         "aac",
         "-b:a",
-        "192k",
+        "160k",
         str(final_path),
     ]
     process = run_command(command)
@@ -357,7 +362,7 @@ def upscale_video(
     final_path = workspace_dir / f"{input_path.stem}_{target_mode}.mp4"
 
     if preset == "natural":
-        progress(0.1, desc="Running natural upscale")
+        progress(0.1, desc="Running natural upscale (CPU encode)")
         logs = [upscale_video_natural(input_path, final_path, metadata, target_mode)]
     else:
         outscale = calculate_outscale(metadata["width"], metadata["height"], target_mode)
@@ -426,10 +431,11 @@ def build_app() -> gr.Blocks:
             )
             target_mode = gr.Radio(
                 choices=[
-                    ("True 4K output (3840x2160)", "4k"),
-                    ("4x upscale", "4x"),
+                    ("1K output (1920x1080)", "1k"),
+                    ("2K output (2560x1440)", "2k"),
+                    ("4K output (3840x2160)", "4k"),
                 ],
-                value="4k",
+                value="2k",
                 label="Output Mode",
             )
 
