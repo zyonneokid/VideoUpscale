@@ -12,6 +12,11 @@ import gradio as gr
 
 RUNTIME_DIR = Path(os.environ.get("VIDEO2X_RUNTIME_DIR", ".video2x_runtime")).resolve()
 PINNED_VERSION = "6.4.0"
+DEFAULT_LINUX_LIBRARY_PATHS = [
+    "/lib/x86_64-linux-gnu",
+    "/usr/lib/x86_64-linux-gnu",
+    "/usr/local/lib",
+]
 
 
 def _download(url: str, destination: Path) -> None:
@@ -98,6 +103,12 @@ def upscale_video(
     command = build_command(binary_path, input_path, output_path, preset, target_mode)
     env = os.environ.copy()
     env["APPIMAGE_EXTRACT_AND_RUN"] = "1"
+    existing_ld_path = env.get("LD_LIBRARY_PATH", "")
+    ld_library_path_parts = [path for path in existing_ld_path.split(":") if path]
+    for library_path in DEFAULT_LINUX_LIBRARY_PATHS:
+        if library_path not in ld_library_path_parts:
+            ld_library_path_parts.append(library_path)
+    env["LD_LIBRARY_PATH"] = ":".join(ld_library_path_parts)
 
     progress(0.15, desc="Running video upscaling")
     process = subprocess.run(
